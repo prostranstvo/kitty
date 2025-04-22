@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kitty Jump! (Vertical)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+    <style>
+        /* Basic styling for the game area */
+        body {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            background-color: #f0f8ff; /* Light blue background */
+            font-family: 'Arial', sans-serif;
+            overflow: hidden; /* Prevent scrollbars */
+        }
+        #gameContainer {
+            position: relative; /* Needed for absolute positioning of canvas */
+            /* Vertical orientation */
+            width: 60vw;  /* Narrower width */
+            max-width: 450px; /* Max width */
+            height: 85vh; /* Taller height */
+            max-height: 700px; /* Max height */
+            border: 4px solid #87ceeb; /* Sky blue border */
+            border-radius: 15px; /* Rounded corners */
+            background-color: #ffffff; /* White background for canvas */
+            box-shadow: 0 10px 20px rgba(0,0,0,0.1); /* Soft shadow */
+            overflow: hidden; /* Keep elements inside */
+        }
+        canvas {
+            display: block; /* Remove extra space below canvas */
+            width: 100%;
+            height: 100%;
+            border-radius: 11px; /* Match container rounding */
+        }
+        #instructions {
+            position: absolute;
+            bottom: 10px; /* Position instructions at the bottom */
+            left: 50%;
+            transform: translateX(-50%);
+            background-color: rgba(0, 0, 0, 0.6);
+            color: white;
+            padding: 8px 15px;
+            border-radius: 10px;
+            font-size: 0.9rem;
+            z-index: 10;
+            text-align: center;
+        }
+    </style>
+</head>
+<body class="bg-gradient-to-b from-sky-300 to-blue-400">
+    <div id="gameContainer">
+        <div id="instructions">Hold SPACEBAR or TAP & HOLD<br>to charge, release to jump!</div>
+        <canvas id="gameCanvas"></canvas>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const gameContainer = document.getElementById('gameContainer');
+
+        let kitty = {
+            x: 0, // Will be centered in resizeCanvas
+            y: 0, // Will be set relative to ground
+            width: 70, // Slightly smaller kitty for vertical view
+            height: 70,
+            velocityY: 0,
+            isJumping: false,
+            onGround: true,
+            chargePower: 0,
+            maxCharge: 60, // Increased max charge slightly
+            image: new Image()
+        };
+
+        // Use the uploaded image URL directly
+        kitty.image.src = 'kitty.png';
+        // Fallback defined in onerror
+
+        const gravity = 0.5; // Slightly lower gravity for higher jumps
+        const groundHeight = 40; // Slightly smaller ground height
+        let balloons = [];
+        let spacePressed = false;
+        let gameStarted = false; // Flag to ensure Tone.js starts with interaction
+
+        // --- Sound Synthesis with Tone.js ---
+        let synth; // Declare synth globally
+
+        // Function to initialize sound (needs user interaction)
+        function initializeAudio() {
+            if (!gameStarted) {
+                Tone.start(); // Start audio context on user interaction
+                synth = new Tone.Synth({
+                    oscillator: { type: 'square' }, // 16-bit feel
+                    envelope: {
+                        attack: 0.01,
+                        decay: 0.1,
+                        sustain: 0.05,
+                        release: 0.2
+                    }
+                }).toDestination();
+                console.log("Audio Context Started");
+                gameStarted = true; // Prevent multiple initializations
+            }
+        }
+
+        function playSound(note, duration) {
+            // Only play if audio is initialized
+            if (synth && gameStarted) {
+                try {
+                    synth.triggerAttackRelease(note, duration);
+                } catch (error) {
+                    console.error("Tone.js error:", error);
+                }
+            }
+        }
+
+        // --- Balloon Class ---
+        class Balloon {
+            constructor(x, y) {
+                this.x = x;
+                this.y = y;
+                this.radius = Math.random() * 15 + 10; // Random size
+                this.color = `hsl(${Math.random() * 360}, 100%, 75%)`; // Random bright color
+                this.opacity = 1.0;
+                this.fadeSpeed = 0.008 + Math.random() * 0.01; // Slightly slower fade
+                this.velocityY = - (Math.random() * 0.5 + 0.2); // Float up slowly
+            }
+
+            update() {
+                this.y += this.velocityY; // Move upwards
+                // Only fade when kitty is on ground
+                if (kitty.onGround && this.opacity > 0) {
+                    this.opacity -= this.fadeSpeed;
+                }
+                if (this.opacity < 0) {
+                    this.opacity = 0;
+                }
+            }
+
+            draw() {
+                ctx.save(); // Save current context state
+                ctx.globalAlpha = this.opacity; // Set opacity
+                ctx.fillStyle = this.color;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+                ctx.fill();
+                // Draw string
+                ctx.strokeStyle = `rgba(0, 0, 0, ${this.opacity * 0.5})`; // Fade string too
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.moveTo(this.x, this.y + this.radius);
+                ctx.lineTo(this.x, this.y + this.radius + 15);
+                ctx.stroke();
+                ctx.restore(); // Restore context state (including alpha)
+            }
+        }
+
+        // --- Game Functions ---
+        function resizeCanvas() {
+            // Get the container's dimensions
+            const containerWidth = gameContainer.clientWidth;
+            const containerHeight = gameContainer.clientHeight;
+
+            // Set canvas dimensions
+            canvas.width = containerWidth;
+            canvas.height = containerHeight;
+
+            // Recalculate ground position and initial kitty position (centered horizontally)
+            kitty.y = canvas.height - groundHeight - kitty.height;
+            kitty.x = (canvas.width / 2) - (kitty.width / 2); // Center kitty horizontally
+
+            // Optional: Redraw immediately after resize
+            draw();
+        }
+
+        function chargeJump() {
+            if (spacePressed && kitty.onGround && kitty.chargePower < kitty.maxCharge) {
+                kitty.chargePower += 1; // Charge speed
+                // Optional: Add a charging sound or visual indicator
+            }
+        }
+
+        function jump() {
+            if (kitty.onGround) {
+                // Initialize audio on first jump attempt
+                initializeAudio();
+
+                kitty.isJumping = true;
+                kitty.onGround = false;
+                // Apply velocity based on charge power - INCREASED jump height potential
+                kitty.velocityY = -10 - (kitty.chargePower / kitty.maxCharge) * 22; // Increased multiplier for higher jumps
+                playSound('C5', '0.1s'); // Jump sound
+
+                // Spawn balloons when jumping
+                spawnBalloons(12); // Spawn slightly more balloons
+
+                kitty.chargePower = 0; // Reset charge power
+            }
+        }
+
+        function spawnBalloons(count) {
+            balloons = []; // Clear existing balloons before spawning new ones
+            for (let i = 0; i < count; i++) {
+                // Spawn near the top, randomly across the width
+                const spawnX = Math.random() * canvas.width;
+                // Spawn higher up in the vertical layout
+                const spawnY = Math.random() * (canvas.height / 4); // Spawn in upper quarter
+                balloons.push(new Balloon(spawnX, spawnY));
+            }
+        }
+
+        function update() {
+            // Apply gravity
+            if (!kitty.onGround) {
+                kitty.velocityY += gravity;
+                kitty.y += kitty.velocityY;
+            }
+
+            // Check for landing
+            const groundLevel = canvas.height - groundHeight - kitty.height;
+            if (kitty.y >= groundLevel) {
+                kitty.y = groundLevel;
+                kitty.velocityY = 0;
+                if (kitty.isJumping) { // Only trigger landing logic once per jump
+                    playSound('C4', '0.15s'); // Landing sound
+                }
+                kitty.isJumping = false;
+                kitty.onGround = true;
+                // Balloon fading starts in balloon update when kitty.onGround is true
+            }
+
+            // Update balloons
+            balloons.forEach(balloon => balloon.update());
+
+            // Remove faded balloons
+            balloons = balloons.filter(balloon => balloon.opacity > 0);
+
+            // Handle jump charging
+            chargeJump();
+        }
+
+        function drawGround() {
+            ctx.fillStyle = '#8B4513'; // Brown color for ground
+            ctx.fillRect(0, canvas.height - groundHeight, canvas.width, groundHeight);
+            // Add some simple grass tufts
+            ctx.fillStyle = '#228B22'; // Forest green
+            for (let i = 0; i < canvas.width; i += 25) { // Slightly wider spacing
+                ctx.beginPath();
+                ctx.moveTo(i, canvas.height - groundHeight);
+                ctx.lineTo(i + 4, canvas.height - groundHeight - 8); // Shorter tufts
+                ctx.lineTo(i + 8, canvas.height - groundHeight);
+                ctx.fill();
+            }
+        }
+
+        function drawKitty() {
+            // Draw charging indicator (optional)
+            if (kitty.chargePower > 0 && kitty.onGround) {
+                const chargeRatio = kitty.chargePower / kitty.maxCharge;
+                ctx.fillStyle = `rgba(255, 255, 0, ${0.2 + chargeRatio * 0.6})`; // Yellow glow more intense
+                ctx.beginPath();
+                // Make glow slightly smaller relative to kitty
+                ctx.arc(
+                    kitty.x + kitty.width / 2,
+                    kitty.y + kitty.height / 2,
+                    kitty.width / 2 + 3 + chargeRatio * 8, // Glow size increases with charge
+                    0, Math.PI * 2
+                );
+                ctx.fill();
+            }
+
+            // Draw the kitty image if loaded, otherwise fallback is handled by onerror
+            if (kitty.image.complete && kitty.image.naturalWidth !== 0) {
+                 ctx.drawImage(kitty.image, kitty.x, kitty.y, kitty.width, kitty.height);
+            } else if (kitty.draw) { // Check if fallback draw function exists
+                kitty.draw(); // Use fallback drawing method
+            }
+            // Basic fallback if image fails and no onerror fallback set
+            else if (!kitty.image.complete || kitty.image.naturalWidth === 0) {
+                 ctx.fillStyle = 'pink'; // Simple fallback color
+                 ctx.fillRect(kitty.x, kitty.y, kitty.width, kitty.height);
+                 ctx.fillStyle = 'black';
+                 ctx.textAlign = 'center';
+                 ctx.font = '16px Arial';
+                 ctx.fillText("Kitty?", kitty.x + kitty.width/2, kitty.y + kitty.height/2 + 5);
+            }
+        }
+
+        function draw() {
+            // Clear canvas with a gradient background matching body
+             const gradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
+             gradient.addColorStop(0, '#87CEEB'); // Sky blue light
+             gradient.addColorStop(1, '#4682B4'); // Steel blue darker
+             ctx.fillStyle = gradient;
+             ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+
+            // Draw background elements (like the ground)
+            drawGround();
+
+            // Draw balloons
+            balloons.forEach(balloon => balloon.draw());
+
+            // Draw kitty
+            drawKitty();
+        }
+
+        function gameLoop() {
+            update();
+            draw();
+            requestAnimationFrame(gameLoop); // Keep the loop going
+        }
+
+        // --- Event Listeners ---
+        window.addEventListener('keydown', (e) => {
+            if (e.code === 'Space' && !e.repeat) { // Use !e.repeat to trigger only once on press down
+                // Initialize audio on first space press if not already done
+                 initializeAudio();
+                spacePressed = true;
+                // Start charging if on ground
+                if (kitty.onGround) {
+                    kitty.chargePower = 0; // Reset charge on new press
+                }
+            }
+        });
+
+        window.addEventListener('keyup', (e) => {
+            if (e.code === 'Space') {
+                if (spacePressed) { // Only jump if space was actually pressed down
+                    jump();
+                    spacePressed = false;
+                }
+            }
+        });
+
+        // Handle touch events for mobile
+        let touchStartTime = 0;
+        let touchIdentifier = null; // Track the specific touch
+
+        gameContainer.addEventListener('touchstart', (e) => {
+            // Only respond to the first touch point
+            if (touchIdentifier === null) {
+                e.preventDefault(); // Prevent default touch behavior (like scrolling)
+                initializeAudio(); // Initialize audio on first touch
+                touchIdentifier = e.changedTouches[0].identifier; // Store the ID of the touch
+                touchStartTime = Date.now();
+                spacePressed = true; // Simulate space press start
+                if (kitty.onGround) {
+                    kitty.chargePower = 0; // Reset charge
+                }
+            }
+        }, { passive: false }); // Need passive: false to call preventDefault
+
+        gameContainer.addEventListener('touchend', (e) => {
+            // Check if the ended touch is the one we are tracking
+            const endedTouch = Array.from(e.changedTouches).find(t => t.identifier === touchIdentifier);
+
+            if (endedTouch) {
+                e.preventDefault();
+                if (spacePressed) {
+                    const touchDuration = Date.now() - touchStartTime;
+                    // Scale charge power based on touch duration, up to max charge
+                    // Adjusted divisor for sensitivity with longer potential hold times
+                    kitty.chargePower = Math.min(kitty.maxCharge, touchDuration / 12);
+                    jump();
+                    spacePressed = false;
+                }
+                 touchIdentifier = null; // Release the tracked touch
+            }
+        }, { passive: false });
+
+         // Handle touch cancellation (e.g., finger slides off screen)
+        gameContainer.addEventListener('touchcancel', (e) => {
+             const cancelledTouch = Array.from(e.changedTouches).find(t => t.identifier === touchIdentifier);
+             if (cancelledTouch) {
+                 spacePressed = false;
+                 kitty.chargePower = 0;
+                 touchIdentifier = null;
+             }
+         }, { passive: false });
+
+
+        // Resize canvas when the window is resized
+        window.addEventListener('resize', resizeCanvas);
+
+        // --- Initial setup ---
+        kitty.image.onload = () => {
+            console.log("Kitty image loaded successfully.");
+            resizeCanvas(); // Set initial size and position after image loads dimensions
+            gameLoop(); // Start the game loop only after image is potentially loaded
+        };
+         // Fallback if image fails to load
+        kitty.image.onerror = () => {
+            console.error("Failed to load kitty image. Using fallback.");
+             // Define a simple fallback drawing method
+             kitty.draw = function() {
+                ctx.fillStyle = 'pink'; // Simple pink rectangle
+                ctx.fillRect(this.x, this.y, this.width, this.height);
+                ctx.fillStyle = 'black';
+                ctx.font = '16px Arial'; // Adjusted font size
+                ctx.textAlign = 'center';
+                ctx.fillText('Kitty', this.x + this.width / 2, this.y + this.height / 2 + 5);
+            };
+            resizeCanvas(); // Set initial size and position
+            gameLoop(); // Start the game loop even if image fails
+        };
+
+         // If the image is already cached/loaded before onload is set
+         if (kitty.image.complete && kitty.image.naturalWidth !== 0) {
+             kitty.image.onload(); // Manually trigger onload logic
+         } else if (kitty.image.complete && kitty.image.naturalWidth === 0) {
+             // If 'complete' is true but width is 0, it likely failed before onerror was set
+             kitty.image.onerror();
+         }
+
+    </script>
+</body>
+</html>
